@@ -1,0 +1,25 @@
+# env
+/.env
+
+# python
+/venv/
+__pycache__/
+*.py[cod]
+
+# runtime and generated app files
+/app_config.json
+/business_card_data.csv
+/logs/
+/img/error_screenshot.png
+/data/validador/
+
+# build artifacts
+/build/
+/dist/
+*.spec
+
+# archives and local binaries
+*.rar
+*.zip
+*.exe
+*.pdf
