@@ -34,7 +34,8 @@ class CardLoadPayload(BaseModel):
 
 class ValidadorPayload(BaseModel):
     card_id: str
-    pdf_url: str
+    pdf_url: str | None = None
+    pdf_base64: str | None = None
     token: str | None = None
 
 
@@ -125,14 +126,17 @@ def run_validador(
 ):
     _check_token(x_webhook_token or payload.token or "")
     card_id = payload.card_id.strip()
-    pdf_url = payload.pdf_url.strip()
-    if not card_id or not pdf_url:
-        raise HTTPException(status_code=400, detail="card_id_and_pdf_url_are_required")
+    pdf_url = (payload.pdf_url or "").strip() or None
+    pdf_base64 = (payload.pdf_base64 or "").strip() or None
+    if not card_id or (not pdf_url and not pdf_base64):
+        raise HTTPException(status_code=400, detail="card_id e pdf_url (ou pdf_base64) sao obrigatorios")
 
     print(f"[validador] Requisição recebida — card_id={card_id}", flush=True)
     events: list[str] = []
     try:
-        result = validador_service.run(card_id, pdf_url, log_callback=events.append)
+        result = validador_service.run(
+            card_id, pdf_url=pdf_url, pdf_base64=pdf_base64, log_callback=events.append
+        )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     except Exception as e:
