@@ -4,7 +4,7 @@ from datetime import datetime
 from pathlib import Path
 
 import requests
-from playwright.sync_api import sync_playwright
+from playwright.sync_api import TimeoutError as PlaywrightTimeoutError, sync_playwright
 
 
 def _get_chromium_executable() -> str | None:
@@ -67,10 +67,23 @@ class ValidadorService:
                 page.locator("#signature_files").set_input_files(
                     str(input_pdf.resolve())
                 )
-
+                
                 self._log(log_callback, "Iniciando validacao")
                 page.locator("#validateSignature").click()
-                page.wait_for_selector("#botaoVisualizarConf", timeout=120000)
+
+                SEM_ASSINATURA = (
+                    "Você submeteu um documento sem assinatura reconhecível"
+                    " ou com assinatura corrompida."
+                )
+                try:
+                    page.wait_for_selector("#botaoVisualizarConf", timeout=120000)
+                except PlaywrightTimeoutError:
+                    if page.get_by_text("sem assinatura reconhecível", exact=False).is_visible():
+                        raise ValueError(SEM_ASSINATURA)
+                    raise
+
+                if page.get_by_text("sem assinatura reconhecível", exact=False).is_visible():
+                    raise ValueError(SEM_ASSINATURA)
 
                 self._log(log_callback, "Abrindo resultado da validacao")
                 page.locator("#botaoVisualizarConf").click()

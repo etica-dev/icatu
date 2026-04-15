@@ -133,6 +133,8 @@ def run_validador(
     events: list[str] = []
     try:
         result = validador_service.run(card_id, pdf_url, log_callback=events.append)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e)) from e
 
