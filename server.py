@@ -93,7 +93,13 @@ def run_icatu(
     if not card_id or not mission:
         raise HTTPException(status_code=400, detail="card_id_and_mission_are_required")
 
-    result = service.run_card(card_id, mission, overrides=payload.overrides or {})
+    events: list[str] = []
+    result = service.run_card(
+        card_id,
+        mission,
+        overrides=payload.overrides or {},
+        log_callback=events.append,
+    )
 
     file_url = None
     if result.file_path and os.path.isfile(result.file_path):
@@ -106,6 +112,7 @@ def run_icatu(
         "status": result.status,
         "message": result.message,
         "file_url": file_url,
+        "events": events,
     }
 
 
@@ -121,8 +128,9 @@ def run_validador(
     if not card_id or not pdf_url:
         raise HTTPException(status_code=400, detail="card_id_and_pdf_url_are_required")
 
+    events: list[str] = []
     try:
-        result = validador_service.run(card_id, pdf_url)
+        result = validador_service.run(card_id, pdf_url, log_callback=events.append)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e)) from e
 
@@ -136,6 +144,7 @@ def run_validador(
         "card_id": card_id,
         "message": result.get("message", ""),
         "file_url": file_url,
+        "events": events,
     }
 
 
