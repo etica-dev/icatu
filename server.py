@@ -1,6 +1,5 @@
 import os
-import threading
-import uuid
+from pathlib import Path
 
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.responses import FileResponse
@@ -13,22 +12,19 @@ from src.validador import ValidadorService
 HOST = os.getenv("BOT_HOST", "0.0.0.0")
 PORT = int(os.getenv("BOT_PORT", "5000"))
 WEBHOOK_TOKEN = os.getenv("BOT_WEBHOOK_TOKEN", "")
+DOWNLOADS_DIR = Path("downloads")
+DOWNLOADS_DIR.mkdir(exist_ok=True)
 
 app = FastAPI(title="Icatu Bot", version="0.1.0")
 service = IcatuAutomationService()
-validador_service = ValidadorService()
-jobs = {}
-jobs_lock = threading.Lock()
+validador_service = ValidadorService(work_dir=DOWNLOADS_DIR / "validador")
 
 
-class WebhookPayload(BaseModel):
+class IcatuPayload(BaseModel):
     card_id: str
     mission: str
-    token: str | None = None
-
-
-class ProcessPayload(WebhookPayload):
     overrides: dict | None = None
+    token: str | None = None
 
 
 class CardLoadPayload(BaseModel):
@@ -42,75 +38,15 @@ class ValidadorPayload(BaseModel):
     token: str | None = None
 
 
-def update_job(job_id, **fields):
-    with jobs_lock:
-        jobs[job_id].update(fields)
+def _check_token(token: str):
+    if WEBHOOK_TOKEN and token != WEBHOOK_TOKEN:
+        raise HTTPException(status_code=401, detail="invalid_token")
 
 
-def append_job_event(job_id, message: str):
-    with jobs_lock:
-        job = jobs.get(job_id)
-        if not job:
-            return
-        job.setdefault("events", []).append(message)
-        job["last_event"] = message
-
-
-def run_job(job_id, card_id, mission):
-    update_job(job_id, status="running")
-    append_job_event(job_id, "Iniciando processamento")
-    result = service.run_card(
-        card_id, mission, log_callback=lambda message: append_job_event(job_id, message)
-    )
-    update_job(
-        job_id,
-        status="finished" if result.success else "failed",
-        result=result.to_dict(),
-    )
-
-
-def run_job_with_overrides(job_id, card_id, mission, overrides):
-    update_job(job_id, status="running")
-    append_job_event(job_id, "Iniciando processamento")
-    result = service.run_card(
-        card_id,
-        mission,
-        overrides=overrides,
-        log_callback=lambda message: append_job_event(job_id, message),
-    )
-    update_job(
-        job_id,
-        status="finished" if result.success else "failed",
-        result=result.to_dict(),
-    )
-
-
-def run_validador_job(job_id, card_id, pdf_url):
-    update_job(job_id, status="running")
-    append_job_event(job_id, "Iniciando validacao do PDF")
-    try:
-        result = validador_service.run(
-            card_id,
-            pdf_url,
-            log_callback=lambda message: append_job_event(job_id, message),
-        )
-        update_job(
-            job_id,
-            status="finished",
-            result=result,
-        )
-    except Exception as exc:
-        append_job_event(job_id, f"Erro na validacao: {exc}")
-        update_job(
-            job_id,
-            status="failed",
-            result={
-                "success": False,
-                "card_id": card_id,
-                "pdf_url": pdf_url,
-                "message": str(exc),
-            },
-        )
+def _file_url(request: Request, file_path: str) -> str:
+    relative = Path(file_path).relative_to(DOWNLOADS_DIR)
+    base = str(request.base_url).rstrip("/")
+    return f"{base}/files/{relative.as_posix()}"
 
 
 @app.get("/health")
@@ -118,82 +54,16 @@ def health():
     return {"status": "ok"}
 
 
-@app.get("/jobs/{job_id}")
-def get_job(job_id: str):
-    with jobs_lock:
-        job = jobs.get(job_id)
-    if not job:
-        raise HTTPException(status_code=404, detail="job_not_found")
-    return job
-
-
-@app.get("/jobs/{job_id}/file")
-def get_job_file(job_id: str):
-    with jobs_lock:
-        job = jobs.get(job_id)
-    if not job:
-        raise HTTPException(status_code=404, detail="job_not_found")
-    result = job.get("result") or {}
-    file_path = result.get("file_path") or result.get("validation_pdf_path")
-    if not file_path:
-        raise HTTPException(status_code=404, detail="no_file_for_this_job")
-    if not os.path.isfile(file_path):
-        raise HTTPException(status_code=404, detail="file_not_found_on_disk")
+@app.get("/files/{filename:path}")
+def serve_file(filename: str):
+    file_path = DOWNLOADS_DIR / filename
+    if not file_path.is_file():
+        raise HTTPException(status_code=404, detail="file_not_found")
     return FileResponse(
-        path=file_path,
+        path=str(file_path),
         media_type="application/pdf",
-        filename=os.path.basename(file_path),
+        filename=file_path.name,
     )
-
-
-@app.post("/jobs/sync")
-def create_job_sync(
-    request: Request,
-    payload: ProcessPayload,
-    x_webhook_token: str | None = Header(default=None),
-):
-    token = x_webhook_token or payload.token or ""
-    if WEBHOOK_TOKEN and token != WEBHOOK_TOKEN:
-        raise HTTPException(status_code=401, detail="invalid_token")
-
-    card_id = payload.card_id.strip()
-    mission = payload.mission.strip()
-    if not card_id or not mission:
-        raise HTTPException(status_code=400, detail="card_id_and_mission_are_required")
-
-    job_id = str(uuid.uuid4())
-    with jobs_lock:
-        jobs[job_id] = {
-            "job_id": job_id,
-            "card_id": card_id,
-            "mission": mission,
-            "status": "running",
-            "result": None,
-            "events": ["Job iniciado em modo síncrono"],
-            "last_event": "Job iniciado em modo síncrono",
-        }
-
-    run_job_with_overrides(job_id, card_id, mission, payload.overrides or {})
-
-    with jobs_lock:
-        job = jobs[job_id]
-
-    result = job.get("result") or {}
-    file_path = result.get("file_path")
-    file_url = None
-    if file_path and os.path.isfile(file_path):
-        base_url = str(request.base_url).rstrip("/")
-        file_url = f"{base_url}/jobs/{job_id}/file"
-
-    return {
-        "job_id": job_id,
-        "card_id": card_id,
-        "mission": mission,
-        "status": job.get("status"),
-        "result": result,
-        "file_url": file_url,
-        "events": job.get("events", []),
-    }
 
 
 @app.post("/cards/load")
@@ -201,141 +71,71 @@ def load_card(
     payload: CardLoadPayload,
     x_webhook_token: str | None = Header(default=None),
 ):
-    token = x_webhook_token or payload.token or ""
-    if WEBHOOK_TOKEN and token != WEBHOOK_TOKEN:
-        raise HTTPException(status_code=401, detail="invalid_token")
-
+    _check_token(x_webhook_token or payload.token or "")
     card_id = payload.card_id.strip()
     if not card_id:
         raise HTTPException(status_code=400, detail="card_id_is_required")
-
     try:
         return service.load_card_data(card_id)
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
 
 
-@app.post("/webhooks/validador", status_code=202)
-def receive_validador_webhook(
+@app.post("/webhooks/icatu")
+def run_icatu(
+    request: Request,
+    payload: IcatuPayload,
+    x_webhook_token: str | None = Header(default=None),
+):
+    _check_token(x_webhook_token or payload.token or "")
+    card_id = payload.card_id.strip()
+    mission = payload.mission.strip()
+    if not card_id or not mission:
+        raise HTTPException(status_code=400, detail="card_id_and_mission_are_required")
+
+    result = service.run_card(card_id, mission, overrides=payload.overrides or {})
+
+    file_url = None
+    if result.file_path and os.path.isfile(result.file_path):
+        file_url = _file_url(request, result.file_path)
+
+    return {
+        "success": result.success,
+        "card_id": result.card_id,
+        "mission": result.mission,
+        "status": result.status,
+        "message": result.message,
+        "file_url": file_url,
+    }
+
+
+@app.post("/webhooks/validador")
+def run_validador(
+    request: Request,
     payload: ValidadorPayload,
     x_webhook_token: str | None = Header(default=None),
 ):
-    token = x_webhook_token or payload.token or ""
-    if WEBHOOK_TOKEN and token != WEBHOOK_TOKEN:
-        raise HTTPException(status_code=401, detail="invalid_token")
-
+    _check_token(x_webhook_token or payload.token or "")
     card_id = payload.card_id.strip()
     pdf_url = payload.pdf_url.strip()
     if not card_id or not pdf_url:
         raise HTTPException(status_code=400, detail="card_id_and_pdf_url_are_required")
 
-    job_id = str(uuid.uuid4())
-    with jobs_lock:
-        jobs[job_id] = {
-            "job_id": job_id,
-            "card_id": card_id,
-            "mission": "validador",
-            "status": "queued",
-            "result": None,
-            "events": ["Job recebido"],
-            "last_event": "Job recebido",
-        }
+    try:
+        result = validador_service.run(card_id, pdf_url)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e)) from e
 
-    thread = threading.Thread(
-        target=run_validador_job,
-        args=(job_id, card_id, pdf_url),
-        daemon=True,
-    )
-    thread.start()
+    file_url = None
+    validation_path = result.get("validation_pdf_path")
+    if validation_path and os.path.isfile(validation_path):
+        file_url = _file_url(request, validation_path)
 
     return {
-        "job_id": job_id,
-        "status": "queued",
+        "success": result.get("success", False),
         "card_id": card_id,
-        "mission": "validador",
-        "pdf_url": pdf_url,
-    }
-
-
-@app.post("/webhooks/bitrix", status_code=202)
-def receive_bitrix_webhook(
-    payload: WebhookPayload,
-    x_webhook_token: str | None = Header(default=None),
-):
-    token = x_webhook_token or payload.token or ""
-    if WEBHOOK_TOKEN and token != WEBHOOK_TOKEN:
-        raise HTTPException(status_code=401, detail="invalid_token")
-
-    card_id = payload.card_id.strip()
-    mission = payload.mission.strip()
-    if not card_id or not mission:
-        raise HTTPException(status_code=400, detail="card_id_and_mission_are_required")
-
-    job_id = str(uuid.uuid4())
-    with jobs_lock:
-        jobs[job_id] = {
-            "job_id": job_id,
-            "card_id": card_id,
-            "mission": mission,
-            "status": "queued",
-            "result": None,
-            "events": ["Job recebido"],
-            "last_event": "Job recebido",
-        }
-
-    thread = threading.Thread(
-        target=run_job,
-        args=(job_id, card_id, mission),
-        daemon=True,
-    )
-    thread.start()
-
-    return {
-        "job_id": job_id,
-        "status": "queued",
-        "card_id": card_id,
-        "mission": mission,
-    }
-
-
-@app.post("/jobs", status_code=202)
-def create_job(
-    payload: ProcessPayload,
-    x_webhook_token: str | None = Header(default=None),
-):
-    token = x_webhook_token or payload.token or ""
-    if WEBHOOK_TOKEN and token != WEBHOOK_TOKEN:
-        raise HTTPException(status_code=401, detail="invalid_token")
-
-    card_id = payload.card_id.strip()
-    mission = payload.mission.strip()
-    if not card_id or not mission:
-        raise HTTPException(status_code=400, detail="card_id_and_mission_are_required")
-
-    job_id = str(uuid.uuid4())
-    with jobs_lock:
-        jobs[job_id] = {
-            "job_id": job_id,
-            "card_id": card_id,
-            "mission": mission,
-            "status": "queued",
-            "result": None,
-            "events": ["Job recebido"],
-            "last_event": "Job recebido",
-        }
-
-    thread = threading.Thread(
-        target=run_job_with_overrides,
-        args=(job_id, card_id, mission, payload.overrides or {}),
-        daemon=True,
-    )
-    thread.start()
-
-    return {
-        "job_id": job_id,
-        "status": "queued",
-        "card_id": card_id,
-        "mission": mission,
+        "message": result.get("message", ""),
+        "file_url": file_url,
     }
 
 
