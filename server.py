@@ -3,6 +3,7 @@ import threading
 import uuid
 
 from fastapi import FastAPI, Header, HTTPException
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 from src.automation_service import IcatuAutomationService
@@ -124,6 +125,25 @@ def get_job(job_id: str):
     if not job:
         raise HTTPException(status_code=404, detail="job_not_found")
     return job
+
+
+@app.get("/jobs/{job_id}/file")
+def get_job_file(job_id: str):
+    with jobs_lock:
+        job = jobs.get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="job_not_found")
+    result = job.get("result") or {}
+    file_path = result.get("file_path") or result.get("validation_pdf_path")
+    if not file_path:
+        raise HTTPException(status_code=404, detail="no_file_for_this_job")
+    if not os.path.isfile(file_path):
+        raise HTTPException(status_code=404, detail="file_not_found_on_disk")
+    return FileResponse(
+        path=file_path,
+        media_type="application/pdf",
+        filename=os.path.basename(file_path),
+    )
 
 
 @app.post("/cards/load")

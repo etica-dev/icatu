@@ -1,4 +1,5 @@
 import io
+import os
 import sys
 import threading
 from contextlib import redirect_stderr, redirect_stdout
@@ -6,6 +7,11 @@ from dataclasses import dataclass
 
 from src.auto_icatu import AutoIcatu
 from src.bitrix_requests import BusinessCardProcessor
+from src.icatu_data import BusinessCardDataLoader
+
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+BUSINESS_CARD_DATA_FILE = os.path.join(BASE_DIR, "business_card_data.csv")
+DATA_DIR = os.path.join(BASE_DIR, "data")
 
 
 @dataclass
@@ -65,11 +71,15 @@ class IcatuAutomationService:
         with self.execution_lock:
             processor = BusinessCardProcessor(card_id)
             processor.process(check_payment=False)
-            auto_icatu = AutoIcatu(interactive=False)
+            bundle = BusinessCardDataLoader(
+                BUSINESS_CARD_DATA_FILE,
+                DATA_DIR,
+                interactive=False,
+            ).load()
             return {
                 "card_id": card_id,
-                "dados_locatario": auto_icatu.dados_locatario,
-                "dados_locador": auto_icatu.dados_locador,
+                "dados_locatario": bundle.dados_locatario,
+                "dados_locador": bundle.dados_locador,
             }
 
     def run_card(

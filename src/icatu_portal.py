@@ -738,8 +738,9 @@ class IcatuPortal:
             except Exception as e:
                 print(f"Ocorreu um erro durante a automação: {e}")
                 screenshot_path = os.path.join(
-                    os.getcwd(), ".\\img\\error_screenshot.png"
+                    os.getcwd(), "img", "error_screenshot.png"
                 )
+                os.makedirs(os.path.join(os.getcwd(), "img"), exist_ok=True)
                 try:
                     page.screenshot(path=screenshot_path)
                     print(f"Screenshot do erro salvo em: {screenshot_path}")

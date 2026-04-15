@@ -16,29 +16,14 @@ if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BUSINESS_CARD_DATA_FILE = os.path.join(BASE_DIR, "business_card_data.csv")
 DATA_DIR = os.path.join(BASE_DIR, "data")
-DOWNLOAD_ROOT = (
-    r"Z:\ArquivoDigital\CONTRATOS\LOCACAO\CADASTROS ONLINE\ANALISE"
-)
-MESES_PT_BR = {
-    1: "1.JANEIRO",
-    2: "2.FEVEREIRO",
-    3: "3.MARCO",
-    4: "4.ABRIL",
-    5: "5.MAIO",
-    6: "6.JUNHO",
-    7: "7.JULHO",
-    8: "8.AGOSTO",
-    9: "9.SETEMBRO",
-    10: "10.OUTUBRO",
-    11: "11.NOVEMBRO",
-    12: "12.DEZEMBRO",
-}
+DOWNLOAD_ROOT = os.path.join(BASE_DIR, "downloads")
 
 
 def build_current_download_root() -> str:
     now = datetime.now()
-    month_folder = MESES_PT_BR[now.month]
-    return os.path.join(DOWNLOAD_ROOT, str(now.year), month_folder)
+    folder = os.path.join(DOWNLOAD_ROOT, str(now.year), f"{now.month:02d}")
+    os.makedirs(folder, exist_ok=True)
+    return folder
 
 
 class AutoIcatu:
