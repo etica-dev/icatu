@@ -19,6 +19,7 @@ class ValidadorService:
         self.headless = headless
 
     def _log(self, log_callback, message: str):
+        print(message, flush=True)
         if log_callback:
             log_callback(message)
 

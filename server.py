@@ -93,6 +93,7 @@ def run_icatu(
     if not card_id or not mission:
         raise HTTPException(status_code=400, detail="card_id_and_mission_are_required")
 
+    print(f"[icatu] Requisição recebida — card_id={card_id} mission={mission}", flush=True)
     events: list[str] = []
     result = service.run_card(
         card_id,
@@ -128,6 +129,7 @@ def run_validador(
     if not card_id or not pdf_url:
         raise HTTPException(status_code=400, detail="card_id_and_pdf_url_are_required")
 
+    print(f"[validador] Requisição recebida — card_id={card_id}", flush=True)
     events: list[str] = []
     try:
         result = validador_service.run(card_id, pdf_url, log_callback=events.append)
