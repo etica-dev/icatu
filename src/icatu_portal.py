@@ -1,5 +1,6 @@
 import os
 import re
+import shutil
 import time
 
 from playwright.sync_api import (
@@ -9,6 +10,11 @@ from playwright.sync_api import (
 )
 
 from src.icatu_data import faixa_renda_anual
+
+
+def _get_chromium_executable() -> str | None:
+    path = os.getenv("CHROMIUM_EXECUTABLE_PATH") or shutil.which("chromium")
+    return path or None
 
 
 class IcatuPortal:
@@ -614,7 +620,7 @@ class IcatuPortal:
             return
 
         with sync_playwright() as p:
-            browser = p.chromium.launch(headless=False)
+            browser = p.chromium.launch(headless=False, executable_path=_get_chromium_executable())
             page = browser.new_page()
             try:
                 page.goto("https://www.icatuseguros.com.br/casadocorretor")
@@ -663,7 +669,7 @@ class IcatuPortal:
 
     def run_automation(self, dados_locatario: dict, dados_locador: dict) -> str | None:
         with sync_playwright() as p:
-            browser = p.chromium.launch(headless=False, args=["--start-maximized"])
+            browser = p.chromium.launch(headless=False, args=["--start-maximized"], executable_path=_get_chromium_executable())
             context = browser.new_context(viewport=None, accept_downloads=True)
             page = context.new_page()
 

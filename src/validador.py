@@ -1,8 +1,15 @@
+import os
+import shutil
 from datetime import datetime
 from pathlib import Path
 
 import requests
 from playwright.sync_api import sync_playwright
+
+
+def _get_chromium_executable() -> str | None:
+    path = os.getenv("CHROMIUM_EXECUTABLE_PATH") or shutil.which("chromium")
+    return path or None
 
 
 class ValidadorService:
@@ -46,7 +53,7 @@ class ValidadorService:
 
         self._log(log_callback, "Abrindo portal do validador")
         with sync_playwright() as playwright:
-            browser = playwright.chromium.launch(headless=self.headless)
+            browser = playwright.chromium.launch(headless=self.headless, executable_path=_get_chromium_executable())
             context = browser.new_context(accept_downloads=True)
             page = context.new_page()
 
