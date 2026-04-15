@@ -9,8 +9,8 @@ from src.automation_service import IcatuAutomationService
 from src.validador import ValidadorService
 
 
-HOST = os.getenv("BOT_HOST", "127.0.0.1")
-PORT = int(os.getenv("BOT_PORT", "8000"))
+HOST = os.getenv("BOT_HOST", "0.0.0.0")
+PORT = int(os.getenv("BOT_PORT", "5000"))
 WEBHOOK_TOKEN = os.getenv("BOT_WEBHOOK_TOKEN", "")
 
 app = FastAPI(title="Icatu Bot", version="0.1.0")
