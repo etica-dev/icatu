@@ -75,15 +75,18 @@ class ValidadorService:
                     "Você submeteu um documento sem assinatura reconhecível"
                     " ou com assinatura corrompida."
                 )
-                try:
-                    page.wait_for_selector("#botaoVisualizarConf", timeout=120000)
-                except PlaywrightTimeoutError:
-                    if page.get_by_text("sem assinatura reconhecível", exact=False).is_visible():
+                # Aguarda o botão de sucesso OU o popup de erro (SweetAlert2) —
+                # o que aparecer primeiro, para não congelar os 120s.
+                page.wait_for_selector(
+                    "#botaoVisualizarConf, .swal2-container",
+                    timeout=120000,
+                )
+                if page.locator(".swal2-container").is_visible():
+                    popup_text = page.locator(".swal2-container").inner_text(timeout=3000)
+                    self._log(log_callback, f"Popup detectado: {popup_text[:200]}")
+                    if "sem assinatura reconhecível" in popup_text or "assinatura corrompida" in popup_text:
                         raise ValueError(SEM_ASSINATURA)
-                    raise
-
-                if page.get_by_text("sem assinatura reconhecível", exact=False).is_visible():
-                    raise ValueError(SEM_ASSINATURA)
+                    raise RuntimeError(f"Popup inesperado do validador: {popup_text[:300]}")
 
                 self._log(log_callback, "Abrindo resultado da validacao")
                 page.locator("#botaoVisualizarConf").click()
