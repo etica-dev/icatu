@@ -2,7 +2,7 @@ import os
 import threading
 import uuid
 
-from fastapi import FastAPI, Header, HTTPException
+from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
@@ -144,6 +144,56 @@ def get_job_file(job_id: str):
         media_type="application/pdf",
         filename=os.path.basename(file_path),
     )
+
+
+@app.post("/jobs/sync")
+def create_job_sync(
+    request: Request,
+    payload: ProcessPayload,
+    x_webhook_token: str | None = Header(default=None),
+):
+    token = x_webhook_token or payload.token or ""
+    if WEBHOOK_TOKEN and token != WEBHOOK_TOKEN:
+        raise HTTPException(status_code=401, detail="invalid_token")
+
+    card_id = payload.card_id.strip()
+    mission = payload.mission.strip()
+    if not card_id or not mission:
+        raise HTTPException(status_code=400, detail="card_id_and_mission_are_required")
+
+    job_id = str(uuid.uuid4())
+    with jobs_lock:
+        jobs[job_id] = {
+            "job_id": job_id,
+            "card_id": card_id,
+            "mission": mission,
+            "status": "running",
+            "result": None,
+            "events": ["Job iniciado em modo síncrono"],
+            "last_event": "Job iniciado em modo síncrono",
+        }
+
+    run_job_with_overrides(job_id, card_id, mission, payload.overrides or {})
+
+    with jobs_lock:
+        job = jobs[job_id]
+
+    result = job.get("result") or {}
+    file_path = result.get("file_path")
+    file_url = None
+    if file_path and os.path.isfile(file_path):
+        base_url = str(request.base_url).rstrip("/")
+        file_url = f"{base_url}/jobs/{job_id}/file"
+
+    return {
+        "job_id": job_id,
+        "card_id": card_id,
+        "mission": mission,
+        "status": job.get("status"),
+        "result": result,
+        "file_url": file_url,
+        "events": job.get("events", []),
+    }
 
 
 @app.post("/cards/load")
