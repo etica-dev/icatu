@@ -6,6 +6,7 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 from src.automation_service import IcatuAutomationService
+from src.bitrix_requests import upload_validation_result
 from src.validador import ValidadorService
 
 
@@ -36,6 +37,7 @@ class ValidadorPayload(BaseModel):
     card_id: str
     pdf_url: str | None = None
     pdf_base64: str | None = None
+    result_field: str | None = None
     token: str | None = None
 
 
@@ -128,6 +130,7 @@ def run_validador(
     card_id = payload.card_id.strip()
     pdf_url = (payload.pdf_url or "").strip() or None
     pdf_base64 = (payload.pdf_base64 or "").strip() or None
+    result_field = (payload.result_field or "").strip() or os.getenv("BITRIX_VALIDATION_FIELD", "")
     if not card_id or (not pdf_url and not pdf_base64):
         raise HTTPException(status_code=400, detail="card_id e pdf_url (ou pdf_base64) sao obrigatorios")
 
@@ -143,15 +146,31 @@ def run_validador(
         raise HTTPException(status_code=500, detail=str(e)) from e
 
     file_url = None
+    bitrix_upload = None
     validation_path = result.get("validation_pdf_path")
+
     if validation_path and os.path.isfile(validation_path):
         file_url = _file_url(request, validation_path)
+
+        if result_field:
+            print(f"[validador] Enviando comprovante para Bitrix24 — deal={card_id} campo={result_field}", flush=True)
+            try:
+                bitrix_upload = upload_validation_result(
+                    deal_id=card_id,
+                    field_name=result_field,
+                    pdf_path=validation_path,
+                )
+                events.append(f"Comprovante enviado ao Bitrix24 campo {result_field}: status {bitrix_upload.get('status_code')}")
+            except Exception as exc:
+                events.append(f"Aviso: falha ao enviar comprovante ao Bitrix24 — {exc}")
+                print(f"[validador] Falha upload Bitrix24: {exc}", flush=True)
 
     return {
         "success": result.get("success", False),
         "card_id": card_id,
         "message": result.get("message", ""),
         "file_url": file_url,
+        "bitrix_upload": bitrix_upload,
         "events": events,
     }
 

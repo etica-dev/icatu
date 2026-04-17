@@ -14,6 +14,51 @@ load_dotenv()
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BUSINESS_CARD_DATA_FILE = os.path.join(BASE_DIR, "business_card_data.csv")
 
+BITRIX_UPDATE_URL = "https://eticaweb.bitrix24.com.br/rest/9011/d2eng022cz3e6hqg/crm.item.update"
+
+
+def upload_validation_result(
+    deal_id: str,
+    field_name: str,
+    pdf_path: str,
+    filename: str | None = None,
+) -> dict:
+    """Converte o PDF validado para base64 e faz upload para o campo do deal no Bitrix24.
+
+    Usa crm.item.update (entityTypeId=2 = Deals).
+    Retorna o dict de resposta da API.
+    """
+    pdf_bytes = Path(pdf_path).read_bytes()
+    pdf_b64 = base64.b64encode(pdf_bytes).decode("utf-8")
+    fname = filename or Path(pdf_path).name
+
+    payload = {
+        "entityTypeId": 2,
+        "id": deal_id,
+        "fields": {
+            field_name: {
+                "fileData": [fname, pdf_b64],
+            }
+        },
+    }
+
+    response = requests.post(
+        BITRIX_UPDATE_URL,
+        json=payload,
+        headers={"Accept": "application/json", "Content-Type": "application/json"},
+        timeout=60,
+    )
+
+    if response.ok:
+        print(f"[bitrix] PDF validado enviado para deal {deal_id} campo {field_name}", flush=True)
+    else:
+        print(
+            f"[bitrix] Erro ao enviar para Bitrix24: {response.status_code} — {response.text[:300]}",
+            flush=True,
+        )
+
+    return {"status_code": response.status_code, "response": response.json() if response.ok else response.text}
+
 
 class BusinessCardProcessor:
     def __init__(self, business_card_id):

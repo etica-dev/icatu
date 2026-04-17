@@ -34,8 +34,8 @@ class ValidadorService:
         if log_callback:
             log_callback(message)
 
-    def _fetch_bitrix_file_bytes(self, pdf_url: str, log_callback=None) -> bytes:
-        """Login no Bitrix24 via Playwright e baixa o arquivo autenticado."""
+    def _bitrix_login_cookies(self, log_callback=None) -> dict:
+        """Faz login no Bitrix24 via Playwright e retorna os cookies de sessao."""
         login = os.getenv("BITRIX_LOGIN", "")
         senha = os.getenv("BITRIX_SENHA", "")
         if not login or not senha:
@@ -44,14 +44,7 @@ class ValidadorService:
                 "Defina as variaveis de ambiente BITRIX_LOGIN e BITRIX_SENHA."
             )
 
-        self._log(log_callback, "URL Bitrix24 detectada — abrindo sessao autenticada")
-
         BITRIX_BASE = "https://eticaweb.bitrix24.com.br"
-        login_url = f"{BITRIX_BASE}/bitrix/components/bitrix/crm.deal.show/show_file.php"
-
-        # Extrair parametros da URL para montar o backurl correto
-        parsed = urlparse(pdf_url)
-        qs = parse_qs(parsed.query)
 
         with sync_playwright() as pw:
             browser = pw.chromium.launch(
@@ -59,50 +52,54 @@ class ValidadorService:
                 executable_path=_get_chromium_executable(),
                 args=["--no-sandbox", "--disable-dev-shm-usage"],
             )
-            context = browser.new_context(accept_downloads=True)
+            context = browser.new_context()
             page = context.new_page()
-
             try:
-                # Acessa a URL do arquivo — vai redirecionar para login
-                self._log(log_callback, "Acessando URL do arquivo (aguarda redirect para login)")
-                page.goto(pdf_url if pdf_url.startswith("http") else BITRIX_BASE + pdf_url,
-                          wait_until="domcontentloaded", timeout=30000)
+                self._log(log_callback, "Abrindo portal Bitrix24 para login")
+                page.goto(f"{BITRIX_BASE}/", wait_until="domcontentloaded", timeout=30000)
 
-                # Verifica se caiu na tela de login
                 if page.locator("input[name='USER_LOGIN']").is_visible(timeout=5000):
-                    self._log(log_callback, "Tela de login detectada — preenchendo credenciais")
+                    self._log(log_callback, "Preenchendo credenciais Bitrix24")
                     page.locator("input[name='USER_LOGIN']").fill(login)
                     page.locator("input[name='USER_PASSWORD']").fill(senha)
 
-                    self._log(log_callback, "Submetendo login")
-                    # Clica no botão de submit ou pressiona Enter
                     submit = page.locator("button[type='submit'], input[type='submit']").first
                     if submit.is_visible(timeout=3000):
                         submit.click()
                     else:
                         page.locator("input[name='USER_PASSWORD']").press("Enter")
 
-                    # Aguarda o redirect pós-login (sai da página de login)
-                    page.wait_for_url(lambda url: "login" not in url.lower(), timeout=30000)
-                    self._log(log_callback, "Login realizado com sucesso")
+                    page.wait_for_url(
+                        lambda url: "login" not in url.lower() and "/auth" not in url.lower(),
+                        timeout=30000,
+                    )
+                    self._log(log_callback, "Login Bitrix24 realizado")
 
-                # Agora deve estar na página do arquivo — fazer download
-                self._log(log_callback, "Baixando arquivo autenticado")
-                with page.expect_download(timeout=60000) as dl_info:
-                    # Se ainda estivermos numa página intermediária, navega para a URL
-                    current = page.url
-                    if "show_file" not in current:
-                        page.goto(pdf_url if pdf_url.startswith("http") else BITRIX_BASE + pdf_url,
-                                  wait_until="domcontentloaded", timeout=30000)
-
-                download = dl_info.value
-                content = Path(download.path()).read_bytes()
-                self._log(log_callback, f"Arquivo baixado: {download.suggested_filename} ({len(content)} bytes)")
-                return content
-
+                # Extrai cookies da sessao autenticada
+                cookies = {c["name"]: c["value"] for c in context.cookies()}
+                return cookies
             finally:
                 context.close()
                 browser.close()
+
+    def _fetch_bitrix_file_bytes(self, pdf_url: str, log_callback=None) -> bytes:
+        """Login no Bitrix24, extrai cookies de sessao e baixa o arquivo via requests."""
+        self._log(log_callback, "URL Bitrix24 detectada — iniciando sessao autenticada")
+
+        cookies = self._bitrix_login_cookies(log_callback=log_callback)
+
+        self._log(log_callback, "Baixando arquivo com sessao autenticada")
+        session = requests.Session()
+        session.cookies.update(cookies)
+        response = session.get(pdf_url, timeout=60, allow_redirects=True)
+        response.raise_for_status()
+
+        content = response.content
+        self._log(
+            log_callback,
+            f"Arquivo recebido: {len(content)} bytes, content-type={response.headers.get('content-type', '?')}",
+        )
+        return content
 
     def download_pdf(
         self,
@@ -125,7 +122,7 @@ class ValidadorService:
 
         elif pdf_url:
             self._log(log_callback, "Baixando PDF informado no webhook")
-            if "bitrix24" in pdf_url and "show_file.php" in pdf_url:
+            if "bitrix24" in pdf_url:
                 content = self._fetch_bitrix_file_bytes(pdf_url, log_callback=log_callback)
             else:
                 response = requests.get(pdf_url, timeout=60)
