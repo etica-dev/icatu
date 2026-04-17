@@ -35,88 +35,74 @@ class ValidadorService:
             log_callback(message)
 
     def _fetch_bitrix_file_bytes(self, pdf_url: str, log_callback=None) -> bytes:
-        """Resolve a Bitrix24 portal file URL to real bytes via REST API.
+        """Login no Bitrix24 via Playwright e baixa o arquivo autenticado."""
+        login = os.getenv("BITRIX_LOGIN", "")
+        senha = os.getenv("BITRIX_SENHA", "")
+        if not login or not senha:
+            raise ValueError(
+                "Credenciais Bitrix24 nao configuradas. "
+                "Defina as variaveis de ambiente BITRIX_LOGIN e BITRIX_SENHA."
+            )
 
-        Requires a webhook token with 'disk' scope set as BITRIX_DISK_TOKEN env var.
-        Falls back to a clear error explaining how to fix it.
-        """
-        import base64 as _base64
+        self._log(log_callback, "URL Bitrix24 detectada — abrindo sessao autenticada")
 
+        BITRIX_BASE = "https://eticaweb.bitrix24.com.br"
+        login_url = f"{BITRIX_BASE}/bitrix/components/bitrix/crm.deal.show/show_file.php"
+
+        # Extrair parametros da URL para montar o backurl correto
         parsed = urlparse(pdf_url)
         qs = parse_qs(parsed.query)
-        owner_id = (qs.get("ownerId") or qs.get("ownerid") or [""])[0]
-        field_name = (qs.get("fieldName") or qs.get("fieldname") or [""])[0]
-        file_id_from_url = (qs.get("fileId") or qs.get("fileid") or [""])[0]
 
-        if not owner_id or not field_name:
-            raise ValueError(
-                f"URL do Bitrix24 nao contem ownerId/fieldName: {pdf_url}"
+        with sync_playwright() as pw:
+            browser = pw.chromium.launch(
+                headless=True,
+                executable_path=_get_chromium_executable(),
+                args=["--no-sandbox", "--disable-dev-shm-usage"],
             )
+            context = browser.new_context(accept_downloads=True)
+            page = context.new_page()
 
-        self._log(
-            log_callback,
-            f"URL Bitrix24 detectada — buscando via REST API (deal={owner_id}, campo={field_name})",
-        )
+            try:
+                # Acessa a URL do arquivo — vai redirecionar para login
+                self._log(log_callback, "Acessando URL do arquivo (aguarda redirect para login)")
+                page.goto(pdf_url if pdf_url.startswith("http") else BITRIX_BASE + pdf_url,
+                          wait_until="domcontentloaded", timeout=30000)
 
-        disk_base = _bitrix_disk_base()
+                # Verifica se caiu na tela de login
+                if page.locator("input[name='USER_LOGIN']").is_visible(timeout=5000):
+                    self._log(log_callback, "Tela de login detectada — preenchendo credenciais")
+                    page.locator("input[name='USER_LOGIN']").fill(login)
+                    page.locator("input[name='USER_PASSWORD']").fill(senha)
 
-        # Step 1: get deal to find the file list (always available with crm scope)
-        r = requests.get(
-            f"{BITRIX_REST_BASE}/crm.deal.get.json",
-            params={"id": owner_id},
-            timeout=30,
-        )
-        r.raise_for_status()
-        deal = r.json().get("result") or {}
-        file_value = deal.get(field_name)
+                    self._log(log_callback, "Submetendo login")
+                    # Clica no botão de submit ou pressiona Enter
+                    submit = page.locator("button[type='submit'], input[type='submit']").first
+                    if submit.is_visible(timeout=3000):
+                        submit.click()
+                    else:
+                        page.locator("input[name='USER_PASSWORD']").press("Enter")
 
-        if not file_value:
-            raise ValueError(
-                f"Campo '{field_name}' vazio ou nao encontrado no deal {owner_id}."
-            )
+                    # Aguarda o redirect pós-login (sai da página de login)
+                    page.wait_for_url(lambda url: "login" not in url.lower(), timeout=30000)
+                    self._log(log_callback, "Login realizado com sucesso")
 
-        # Resolve file entry and get the last (most recent) file
-        if not isinstance(file_value, (list, tuple)):
-            file_value = [file_value]
-        # Use the matching fileId from URL if provided, otherwise the last entry
-        file_entry = file_value[-1]
-        if file_id_from_url:
-            for entry in file_value:
-                if isinstance(entry, dict) and str(entry.get("id")) == str(file_id_from_url):
-                    file_entry = entry
-                    break
-        if isinstance(file_entry, dict):
-            file_id = str(file_entry.get("id") or file_entry.get("ID", ""))
-        else:
-            file_id = str(file_entry)
+                # Agora deve estar na página do arquivo — fazer download
+                self._log(log_callback, "Baixando arquivo autenticado")
+                with page.expect_download(timeout=60000) as dl_info:
+                    # Se ainda estivermos numa página intermediária, navega para a URL
+                    current = page.url
+                    if "show_file" not in current:
+                        page.goto(pdf_url if pdf_url.startswith("http") else BITRIX_BASE + pdf_url,
+                                  wait_until="domcontentloaded", timeout=30000)
 
-        self._log(log_callback, f"ID do arquivo Bitrix24: {file_id}")
+                download = dl_info.value
+                content = Path(download.path()).read_bytes()
+                self._log(log_callback, f"Arquivo baixado: {download.suggested_filename} ({len(content)} bytes)")
+                return content
 
-        # Step 2: If we have a disk-scoped token, use disk.attachedObject.get
-        if disk_base:
-            self._log(log_callback, "Usando BITRIX_DISK_TOKEN para obter URL autenticada")
-            r2 = requests.get(
-                f"{disk_base}/disk.attachedObject.get.json",
-                params={"id": file_id},
-                timeout=30,
-            )
-            r2.raise_for_status()
-            file_info = r2.json().get("result") or {}
-            download_url = file_info.get("DOWNLOAD_URL") or file_info.get("downloadUrl")
-            if download_url:
-                self._log(log_callback, "Download URL autenticada obtida — baixando arquivo")
-                r3 = requests.get(download_url, timeout=60)
-                r3.raise_for_status()
-                return r3.content
-
-        # Step 3: No disk token available — raise a clear, actionable error
-        raise ValueError(
-            "Nao foi possivel baixar o arquivo do Bitrix24: o webhook atual nao tem escopo 'disk'. "
-            "Solucoes possiveis:\n"
-            "  (A) Envie o PDF como base64 no campo 'pdf_base64' do payload.\n"
-            "  (B) Crie um novo webhook no Bitrix24 com escopo 'disk' e defina "
-            "a variavel de ambiente BITRIX_DISK_TOKEN com o token gerado."
-        )
+            finally:
+                context.close()
+                browser.close()
 
     def download_pdf(
         self,
