@@ -160,7 +160,11 @@ def run_validador(
                     field_name=result_field,
                     pdf_path=validation_path,
                 )
-                events.append(f"Comprovante enviado ao Bitrix24 campo {result_field}: status {bitrix_upload.get('status_code')}")
+                uploaded_ok = bitrix_upload.get("success", False)
+                events.append(
+                    f"Comprovante {'salvo' if uploaded_ok else 'ERRO ao salvar'} no Bitrix24 "
+                    f"campo {result_field} (HTTP {bitrix_upload.get('status_code')})"
+                )
             except Exception as exc:
                 events.append(f"Aviso: falha ao enviar comprovante ao Bitrix24 — {exc}")
                 print(f"[validador] Falha upload Bitrix24: {exc}", flush=True)

@@ -14,7 +14,7 @@ load_dotenv()
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BUSINESS_CARD_DATA_FILE = os.path.join(BASE_DIR, "business_card_data.csv")
 
-BITRIX_UPDATE_URL = "https://eticaweb.bitrix24.com.br/rest/9011/d2eng022cz3e6hqg/crm.item.update"
+BITRIX_DEAL_UPDATE_URL = "https://eticaweb.bitrix24.com.br/rest/9011/d2eng022cz3e6hqg/crm.deal.update"
 
 
 def upload_validation_result(
@@ -23,41 +23,49 @@ def upload_validation_result(
     pdf_path: str,
     filename: str | None = None,
 ) -> dict:
-    """Converte o PDF validado para base64 e faz upload para o campo do deal no Bitrix24.
+    """Converte o PDF validado para base64 e salva no campo do deal via crm.deal.update.
 
-    Usa crm.item.update (entityTypeId=2 = Deals).
-    Retorna o dict de resposta da API.
+    Retorna dict com status_code e response da API.
+    crm.deal.update retorna {"result": true} em caso de sucesso.
     """
     pdf_bytes = Path(pdf_path).read_bytes()
     pdf_b64 = base64.b64encode(pdf_bytes).decode("utf-8")
     fname = filename or Path(pdf_path).name
 
     payload = {
-        "entityTypeId": 2,
-        "id": deal_id,
+        "id": int(deal_id),
         "fields": {
-            field_name: {
-                "fileData": [fname, pdf_b64],
-            }
+            field_name: {"fileData": [fname, pdf_b64]},
         },
     }
 
     response = requests.post(
-        BITRIX_UPDATE_URL,
+        BITRIX_DEAL_UPDATE_URL,
         json=payload,
         headers={"Accept": "application/json", "Content-Type": "application/json"},
         timeout=60,
     )
 
-    if response.ok:
-        print(f"[bitrix] PDF validado enviado para deal {deal_id} campo {field_name}", flush=True)
+    try:
+        resp_json = response.json()
+    except Exception:
+        resp_json = response.text
+
+    success = response.ok and resp_json.get("result") is True if isinstance(resp_json, dict) else False
+
+    if success:
+        print(f"[bitrix] PDF validado salvo no deal {deal_id} campo {field_name}", flush=True)
     else:
         print(
-            f"[bitrix] Erro ao enviar para Bitrix24: {response.status_code} — {response.text[:300]}",
+            f"[bitrix] Falha ao salvar no Bitrix24: HTTP {response.status_code} — {str(resp_json)[:300]}",
             flush=True,
         )
 
-    return {"status_code": response.status_code, "response": response.json() if response.ok else response.text}
+    return {
+        "status_code": response.status_code,
+        "success": success,
+        "response": resp_json,
+    }
 
 
 class BusinessCardProcessor:
