@@ -60,6 +60,7 @@ app = FastAPI(
     description=_DESCRIPTION,
     docs_url="/docs",
     redoc_url="/redoc",
+    swagger_ui_parameters={"defaultModelsExpandDepth": -1},
 )
 
 service = IcatuAutomationService()
@@ -264,7 +265,7 @@ def run_icatu(
     x_webhook_token: str | None = Header(default=None),
 ):
     """
-    Executa uma missão de automação no portal Icatu Seguros para o card informado.
+    Executa automação no portal Icatu Seguros para o card informado.
 
     Requer **token de usuário** via header `X-Webhook-Token` ou campo `token` no corpo.
 
