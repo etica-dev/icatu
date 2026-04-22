@@ -8,8 +8,11 @@ from pathlib import Path
 import requests
 from dotenv import load_dotenv
 
+from src.logger import get_logger
 
 load_dotenv()
+
+log = get_logger("bitrix")
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BUSINESS_CARD_DATA_FILE = os.path.join(BASE_DIR, "business_card_data.csv")
@@ -54,11 +57,11 @@ def upload_validation_result(
     success = response.ok and resp_json.get("result") is True if isinstance(resp_json, dict) else False
 
     if success:
-        print(f"[bitrix] PDF validado salvo no deal {deal_id} campo {field_name}", flush=True)
+        log.info("deal=%s campo=%s upload=sucesso", deal_id, field_name)
     else:
-        print(
-            f"[bitrix] Falha ao salvar no Bitrix24: HTTP {response.status_code} — {str(resp_json)[:300]}",
-            flush=True,
+        log.warning(
+            "deal=%s campo=%s upload=falha http=%s resposta=%s",
+            deal_id, field_name, response.status_code, str(resp_json)[:300],
         )
 
     return {

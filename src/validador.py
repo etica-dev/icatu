@@ -7,6 +7,10 @@ from urllib.parse import parse_qs, urlparse
 import requests
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError, sync_playwright
 
+from src.logger import get_logger
+
+log = get_logger("validador")
+
 BITRIX_REST_BASE = "https://eticaweb.bitrix24.com.br/rest/9011/mwgwaj2ew7lzfxp2"
 BITRIX_REST_BASE_DISK = None  # will be resolved at runtime from BITRIX_DISK_TOKEN env var
 
@@ -30,7 +34,7 @@ class ValidadorService:
         self.headless = headless
 
     def _log(self, log_callback, message: str):
-        print(message, flush=True)
+        log.info(message)
         if log_callback:
             log_callback(message)
 
@@ -170,7 +174,7 @@ class ValidadorService:
             raise ValueError(
                 "O conteudo recebido nao e um PDF valido "
                 f"(primeiros bytes: {content[:80]!r}). "
-                "Verifique se a URL exige autenticacao ou se o base64 esta correto."
+                "Verifique se a URL está correta."
             )
 
         target_path.write_bytes(content)

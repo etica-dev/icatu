@@ -1,20 +1,32 @@
 import os
+import time
+import uuid
+from collections import defaultdict
 from pathlib import Path
 
-from fastapi import FastAPI, Header, HTTPException
+from fastapi import FastAPI, Header, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 
 from src.automation_service import IcatuAutomationService
 from src.bitrix_requests import upload_validation_result
 from src import token_store
+from src.logger import get_logger, setup_logging
 from src.validador import ValidadorService
 
+setup_logging()
+log = get_logger("api")
 
 HOST = os.getenv("BOT_HOST", "0.0.0.0")
 PORT = int(os.getenv("BOT_PORT", "5000"))
 ADMIN_TOKEN = os.getenv("ADMIN_TOKEN", "")
 DOWNLOADS_DIR = Path("downloads")
 DOWNLOADS_DIR.mkdir(exist_ok=True)
+
+# Rate limiting: máx requisições por janela de tempo por token
+_RATE_LIMIT_MAX = int(os.getenv("RATE_LIMIT_MAX", "30"))
+_RATE_LIMIT_WINDOW = int(os.getenv("RATE_LIMIT_WINDOW", "60"))  # segundos
+_rate_buckets: dict[str, list[float]] = defaultdict(list)
+
 
 _DESCRIPTION = """
 ## Icatu Bot API
@@ -44,6 +56,13 @@ Sem token válido a API retorna **401 Unauthorized**.
 
 ---
 
+### Rastreabilidade
+
+Toda resposta inclui o campo **`request_id`** — um identificador único gerado por requisição.
+Use-o para localizar logs específicos em caso de erros ou para abrir suporte.
+
+---
+
 ### Endpoints disponíveis
 
 | Endpoint | Método | Descrição |
@@ -68,6 +87,29 @@ validador_service = ValidadorService(work_dir=DOWNLOADS_DIR / "validador")
 
 
 # ---------------------------------------------------------------------------
+# Middleware — Request ID
+# ---------------------------------------------------------------------------
+
+@app.middleware("http")
+async def request_id_middleware(request: Request, call_next):
+    request_id = str(uuid.uuid4())
+    request.state.request_id = request_id
+    start = time.monotonic()
+    response: Response = await call_next(request)
+    elapsed_ms = int((time.monotonic() - start) * 1000)
+    response.headers["X-Request-ID"] = request_id
+    log.info(
+        "request_id=%s method=%s path=%s status=%s duration_ms=%d",
+        request_id,
+        request.method,
+        request.url.path,
+        response.status_code,
+        elapsed_ms,
+    )
+    return response
+
+
+# ---------------------------------------------------------------------------
 # Schemas
 # ---------------------------------------------------------------------------
 
@@ -76,6 +118,11 @@ class TokenCreatePayload(BaseModel):
         ...,
         description="Nome de identificação do usuário (ex: 'joao', 'sistema_bitrix').",
         examples=["joao"],
+    )
+    expires_days: int | None = Field(
+        default=None,
+        description="Dias até o token expirar. Omitir = sem expiração.",
+        examples=[365],
     )
     admin_token: str | None = Field(
         default=None,
@@ -133,31 +180,59 @@ class ValidadorPayload(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# Helpers de autenticação
+# Helpers de autenticação e rate limiting
 # ---------------------------------------------------------------------------
 
 def _require_admin(header_token: str | None, body_token: str | None) -> None:
-    """Valida ADMIN_TOKEN. Levanta 401 se inválido."""
     provided = header_token or body_token or ""
     if not ADMIN_TOKEN:
         raise HTTPException(
             status_code=503,
-            detail="ADMIN_TOKEN não configurado no servidor. Defina a variável de ambiente ADMIN_TOKEN.",
+            detail="ADMIN_TOKEN não configurado no servidor.",
         )
     if not provided or provided != ADMIN_TOKEN:
+        log.warning("Tentativa de acesso admin com token inválido.")
         raise HTTPException(status_code=401, detail="admin_token_invalido")
 
 
 def _require_token(header_token: str | None, body_token: str | None) -> str:
-    """Valida token de acesso contra o repositório de tokens. Retorna o username."""
     provided = (header_token or body_token or "").strip()
     username = token_store.validate_token(provided)
     if username is None:
+        log.warning("Requisição rejeitada — token inválido ou expirado.")
         raise HTTPException(
             status_code=401,
-            detail="Token inválido ou não autorizado. Solicite um token ao administrador.",
+            detail="Token inválido, expirado ou não autorizado. Solicite um token ao administrador.",
         )
+    _check_rate_limit(username)
     return username
+
+
+def _check_rate_limit(username: str) -> None:
+    now = time.monotonic()
+    window_start = now - _RATE_LIMIT_WINDOW
+    bucket = _rate_buckets[username]
+    # Remove timestamps fora da janela
+    _rate_buckets[username] = [t for t in bucket if t > window_start]
+    if len(_rate_buckets[username]) >= _RATE_LIMIT_MAX:
+        log.warning(
+            "Rate limit atingido para usuário '%s' (%d req/%ds).",
+            username,
+            _RATE_LIMIT_MAX,
+            _RATE_LIMIT_WINDOW,
+        )
+        raise HTTPException(
+            status_code=429,
+            detail=(
+                f"Limite de {_RATE_LIMIT_MAX} requisições por {_RATE_LIMIT_WINDOW}s atingido. "
+                "Aguarde antes de tentar novamente."
+            ),
+        )
+    _rate_buckets[username].append(now)
+
+
+def _rid(request: Request) -> str:
+    return getattr(request.state, "request_id", "-")
 
 
 # ---------------------------------------------------------------------------
@@ -186,12 +261,14 @@ def create_token(
 ):
     _require_admin(x_admin_token, payload.admin_token)
     try:
-        token = token_store.create_token(payload.username)
+        entry = token_store.create_token(payload.username, expires_days=payload.expires_days)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     return {
         "username": payload.username.strip().lower(),
-        "token": token,
+        "token": entry["token"],
+        "created_at": entry["created_at"],
+        "expires_at": entry["expires_at"],
         "message": "Token criado com sucesso. Guarde-o em local seguro.",
     }
 
@@ -200,10 +277,7 @@ def create_token(
 def list_tokens(x_admin_token: str | None = Header(default=None)):
     _require_admin(x_admin_token, None)
     tokens = token_store.list_tokens()
-    return {
-        "count": len(tokens),
-        "tokens": [{"username": u, "token": t} for u, t in tokens.items()],
-    }
+    return {"count": len(tokens), "tokens": tokens}
 
 
 @app.delete("/tokens/{username}", include_in_schema=False)
@@ -228,6 +302,7 @@ def delete_token(
     summary="Carregar dados de um card do Bitrix24",
 )
 def load_card(
+    request: Request,
     payload: CardLoadPayload,
     x_webhook_token: str | None = Header(default=None),
 ):
@@ -245,13 +320,16 @@ def load_card(
     ```
     """
     username = _require_token(x_webhook_token, payload.token)
-    print(f"[cards/load] Usuário: {username} | card_id={payload.card_id}", flush=True)
     card_id = payload.card_id.strip()
+    rid = _rid(request)
+    log.info("request_id=%s user=%s action=cards/load card_id=%s", rid, username, card_id)
     if not card_id:
         raise HTTPException(status_code=400, detail="card_id é obrigatório.")
     try:
-        return service.load_card_data(card_id)
+        data = service.load_card_data(card_id)
+        return {"request_id": rid, **data}
     except Exception as e:
+        log.error("request_id=%s action=cards/load erro=%s", rid, e)
         raise HTTPException(status_code=400, detail=str(e)) from e
 
 
@@ -261,11 +339,12 @@ def load_card(
     summary="Executar automação no portal Icatu",
 )
 def run_icatu(
+    request: Request,
     payload: IcatuPayload,
     x_webhook_token: str | None = Header(default=None),
 ):
     """
-    Executa automação no portal Icatu Seguros para o card informado.
+    Executa uma missão de automação no portal Icatu Seguros para o card informado.
 
     Requer **token de usuário** via header `X-Webhook-Token` ou campo `token` no corpo.
 
@@ -283,6 +362,7 @@ def run_icatu(
     **Resposta de sucesso:**
     ```json
     {
+      "request_id": "...",
       "success": true,
       "card_id": "27505",
       "mission": "garantia_aluguel",
@@ -295,10 +375,16 @@ def run_icatu(
     username = _require_token(x_webhook_token, payload.token)
     card_id = payload.card_id.strip()
     mission = payload.mission.strip()
+    rid = _rid(request)
+
     if not card_id or not mission:
         raise HTTPException(status_code=400, detail="card_id e mission são obrigatórios.")
 
-    print(f"[icatu] Usuário: {username} | card_id={card_id} mission={mission}", flush=True)
+    log.info(
+        "request_id=%s user=%s action=webhooks/icatu card_id=%s mission=%s",
+        rid, username, card_id, mission,
+    )
+
     events: list[str] = []
     result = service.run_card(
         card_id,
@@ -307,7 +393,16 @@ def run_icatu(
         log_callback=events.append,
     )
 
+    if result.success:
+        log.info("request_id=%s action=webhooks/icatu card_id=%s status=sucesso", rid, card_id)
+    else:
+        log.warning(
+            "request_id=%s action=webhooks/icatu card_id=%s status=falha message=%s",
+            rid, card_id, result.message,
+        )
+
     return {
+        "request_id": rid,
         "success": result.success,
         "card_id": result.card_id,
         "mission": result.mission,
@@ -323,6 +418,7 @@ def run_icatu(
     summary="Validar assinatura de PDF",
 )
 def run_validador(
+    request: Request,
     payload: ValidadorPayload,
     x_webhook_token: str | None = Header(default=None),
 ):
@@ -352,6 +448,7 @@ def run_validador(
     **Resposta de sucesso:**
     ```json
     {
+      "request_id": "...",
       "success": true,
       "card_id": "27505",
       "message": "Validacao concluida com sucesso.",
@@ -365,6 +462,7 @@ def run_validador(
     pdf_url = (payload.pdf_url or "").strip() or None
     pdf_base64 = (payload.pdf_base64 or "").strip() or None
     result_field = (payload.result_field or "").strip() or os.getenv("BITRIX_VALIDATION_FIELD", "")
+    rid = _rid(request)
 
     if not card_id or (not pdf_url and not pdf_base64):
         raise HTTPException(
@@ -372,25 +470,27 @@ def run_validador(
             detail="card_id e pdf_url (ou pdf_base64) são obrigatórios.",
         )
 
-    print(f"[validador] Usuário: {username} | card_id={card_id}", flush=True)
+    log.info(
+        "request_id=%s user=%s action=webhooks/validador card_id=%s result_field=%s",
+        rid, username, card_id, result_field or "nenhum",
+    )
+
     events: list[str] = []
     try:
         result = validador_service.run(
             card_id, pdf_url=pdf_url, pdf_base64=pdf_base64, log_callback=events.append
         )
     except ValueError as e:
+        log.warning("request_id=%s action=webhooks/validador card_id=%s erro_validacao=%s", rid, card_id, e)
         raise HTTPException(status_code=400, detail=str(e)) from e
     except Exception as e:
+        log.error("request_id=%s action=webhooks/validador card_id=%s erro_interno=%s", rid, card_id, e)
         raise HTTPException(status_code=500, detail=str(e)) from e
 
     bitrix_upload = None
     validation_path = result.get("validation_pdf_path")
 
     if validation_path and os.path.isfile(validation_path) and result_field:
-        print(
-            f"[validador] Enviando comprovante — deal={card_id} campo={result_field}",
-            flush=True,
-        )
         try:
             bitrix_upload = upload_validation_result(
                 deal_id=card_id,
@@ -402,12 +502,35 @@ def run_validador(
                 f"Comprovante {'salvo' if uploaded_ok else 'ERRO ao salvar'} no Bitrix24 "
                 f"campo {result_field} (HTTP {bitrix_upload.get('status_code')})"
             )
+            if uploaded_ok:
+                log.info(
+                    "request_id=%s action=webhooks/validador card_id=%s bitrix_upload=sucesso campo=%s",
+                    rid, card_id, result_field,
+                )
+            else:
+                log.warning(
+                    "request_id=%s action=webhooks/validador card_id=%s bitrix_upload=falha campo=%s",
+                    rid, card_id, result_field,
+                )
         except Exception as exc:
             events.append(f"Aviso: falha ao enviar comprovante ao Bitrix24 — {exc}")
-            print(f"[validador] Falha upload Bitrix24: {exc}", flush=True)
+            log.error(
+                "request_id=%s action=webhooks/validador card_id=%s bitrix_upload=erro exc=%s",
+                rid, card_id, exc,
+            )
+
+    success = result.get("success", False)
+    if success:
+        log.info("request_id=%s action=webhooks/validador card_id=%s status=sucesso", rid, card_id)
+    else:
+        log.warning(
+            "request_id=%s action=webhooks/validador card_id=%s status=falha message=%s",
+            rid, card_id, result.get("message"),
+        )
 
     return {
-        "success": result.get("success", False),
+        "request_id": rid,
+        "success": success,
         "card_id": card_id,
         "message": result.get("message", ""),
         "bitrix_upload": bitrix_upload,
