@@ -16,6 +16,25 @@ from src.validador import ValidadorService
 setup_logging()
 log = get_logger("api")
 
+_TL_TITLE = "[B][ Validador de Assinatura — API ][/B]"
+
+def _tl_inicio() -> str:
+    return f"{_TL_TITLE}\nValidação de assinatura digital iniciada."
+
+def _tl_sucesso(result_field: str, upload_ok: bool) -> str:
+    corpo = "[COLOR=#27ae60][B]Assinatura validada com sucesso.[/B][/COLOR]"
+    if result_field and upload_ok:
+        corpo += f"\nComprovante registrado no Bitrix24 (campo {result_field})."
+    elif result_field and not upload_ok:
+        corpo += f"\n[COLOR=#e67e22]Atenção: comprovante não pôde ser salvo no campo {result_field}.[/COLOR]"
+    return f"{_TL_TITLE}\n{corpo}"
+
+def _tl_falha(motivo: str) -> str:
+    return f"{_TL_TITLE}\n[COLOR=#e74c3c][B]Falha na validação:[/B][/COLOR] {motivo}"
+
+def _tl_erro_interno() -> str:
+    return f"{_TL_TITLE}\n[COLOR=#e74c3c][B]Erro interno durante a validação.[/B][/COLOR] Contate o administrador."
+
 HOST = os.getenv("BOT_HOST", "0.0.0.0")
 PORT = int(os.getenv("BOT_PORT", "5000"))
 ADMIN_TOKEN = os.getenv("ADMIN_TOKEN", "")
@@ -475,7 +494,7 @@ def run_validador(
         rid, username, card_id, result_field or "nenhum",
     )
 
-    add_timeline_comment(card_id, "Validação de assinatura digital iniciada.")
+    add_timeline_comment(card_id, _tl_inicio())
 
     events: list[str] = []
     try:
@@ -484,11 +503,11 @@ def run_validador(
         )
     except ValueError as e:
         log.warning("request_id=%s action=webhooks/validador card_id=%s erro_validacao=%s", rid, card_id, e)
-        add_timeline_comment(card_id, f"Falha na validação: {e}")
+        add_timeline_comment(card_id, _tl_falha(str(e)))
         raise HTTPException(status_code=400, detail=str(e)) from e
     except Exception as e:
         log.error("request_id=%s action=webhooks/validador card_id=%s erro_interno=%s", rid, card_id, e)
-        add_timeline_comment(card_id, "Erro interno durante a validação. Contate o administrador.")
+        add_timeline_comment(card_id, _tl_erro_interno())
         raise HTTPException(status_code=500, detail=str(e)) from e
 
     bitrix_upload = None
@@ -526,19 +545,14 @@ def run_validador(
     success = result.get("success", False)
     if success:
         log.info("request_id=%s action=webhooks/validador card_id=%s status=sucesso", rid, card_id)
-        _upload_ok = bitrix_upload and bitrix_upload.get("success")
-        _fim_msg = "Assinatura validada com sucesso."
-        if result_field and _upload_ok:
-            _fim_msg += f" Comprovante registrado no Bitrix24 (campo {result_field})."
-        elif result_field and not _upload_ok:
-            _fim_msg += " Atenção: comprovante não pôde ser salvo no Bitrix24."
-        add_timeline_comment(card_id, _fim_msg)
+        _upload_ok = bool(bitrix_upload and bitrix_upload.get("success"))
+        add_timeline_comment(card_id, _tl_sucesso(result_field, _upload_ok))
     else:
         log.warning(
             "request_id=%s action=webhooks/validador card_id=%s status=falha message=%s",
             rid, card_id, result.get("message"),
         )
-        add_timeline_comment(card_id, f"Falha na validação: {result.get('message', 'resultado desconhecido')}")
+        add_timeline_comment(card_id, _tl_falha(result.get("message", "resultado desconhecido")))
 
     return {
         "request_id": rid,
