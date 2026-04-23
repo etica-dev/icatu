@@ -8,7 +8,7 @@ from fastapi import FastAPI, Header, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 
 from src.automation_service import IcatuAutomationService
-from src.bitrix_requests import upload_validation_result
+from src.bitrix_requests import add_timeline_comment, upload_validation_result
 from src import token_store
 from src.logger import get_logger, setup_logging
 from src.validador import ValidadorService
@@ -423,7 +423,7 @@ def run_validador(
     x_webhook_token: str | None = Header(default=None),
 ):
     """
-    Envia um PDF ao validador de assinaturas da Icatu e salva o comprovante de validação no Bitrix24.
+    Envia um PDF ao validador de assinaturas do Gov (validar.iti.gov.br/) e salva o comprovante de validação no Bitrix24.
 
     O PDF pode ser fornecido via `pdf_url` (incluindo URLs autenticadas do Bitrix24)
     ou diretamente em `pdf_base64`.
@@ -475,6 +475,8 @@ def run_validador(
         rid, username, card_id, result_field or "nenhum",
     )
 
+    add_timeline_comment(card_id, "Validação de assinatura digital iniciada.")
+
     events: list[str] = []
     try:
         result = validador_service.run(
@@ -482,9 +484,11 @@ def run_validador(
         )
     except ValueError as e:
         log.warning("request_id=%s action=webhooks/validador card_id=%s erro_validacao=%s", rid, card_id, e)
+        add_timeline_comment(card_id, f"Falha na validação: {e}")
         raise HTTPException(status_code=400, detail=str(e)) from e
     except Exception as e:
         log.error("request_id=%s action=webhooks/validador card_id=%s erro_interno=%s", rid, card_id, e)
+        add_timeline_comment(card_id, "Erro interno durante a validação. Contate o administrador.")
         raise HTTPException(status_code=500, detail=str(e)) from e
 
     bitrix_upload = None
@@ -522,11 +526,19 @@ def run_validador(
     success = result.get("success", False)
     if success:
         log.info("request_id=%s action=webhooks/validador card_id=%s status=sucesso", rid, card_id)
+        _upload_ok = bitrix_upload and bitrix_upload.get("success")
+        _fim_msg = "Assinatura validada com sucesso."
+        if result_field and _upload_ok:
+            _fim_msg += f" Comprovante registrado no Bitrix24 (campo {result_field})."
+        elif result_field and not _upload_ok:
+            _fim_msg += " Atenção: comprovante não pôde ser salvo no Bitrix24."
+        add_timeline_comment(card_id, _fim_msg)
     else:
         log.warning(
             "request_id=%s action=webhooks/validador card_id=%s status=falha message=%s",
             rid, card_id, result.get("message"),
         )
+        add_timeline_comment(card_id, f"Falha na validação: {result.get('message', 'resultado desconhecido')}")
 
     return {
         "request_id": rid,

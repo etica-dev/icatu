@@ -18,6 +18,32 @@ BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BUSINESS_CARD_DATA_FILE = os.path.join(BASE_DIR, "business_card_data.csv")
 
 BITRIX_DEAL_UPDATE_URL = "https://eticaweb.bitrix24.com.br/rest/9011/d2eng022cz3e6hqg/crm.deal.update"
+BITRIX_TIMELINE_COMMENT_URL = "https://eticaweb.bitrix24.com.br/rest/9011/d2eng022cz3e6hqg/crm.timeline.comment.add"
+
+
+def add_timeline_comment(deal_id: str, comment: str) -> None:
+    """Adiciona um comentário na timeline do deal. Falhas são logadas e silenciadas."""
+    try:
+        payload = {
+            "fields": {
+                "ENTITY_ID": int(deal_id),
+                "ENTITY_TYPE": "deal",
+                "COMMENT": comment,
+            }
+        }
+        response = requests.post(
+            BITRIX_TIMELINE_COMMENT_URL,
+            json=payload,
+            headers={"Accept": "application/json", "Content-Type": "application/json"},
+            timeout=15,
+        )
+        resp_json = response.json() if response.ok else response.text
+        if not (response.ok and isinstance(resp_json, dict) and resp_json.get("result")):
+            log.warning("deal=%s timeline_comment=falha http=%s resposta=%s", deal_id, response.status_code, str(resp_json)[:200])
+        else:
+            log.info("deal=%s timeline_comment=ok", deal_id)
+    except Exception as exc:
+        log.warning("deal=%s timeline_comment=erro exc=%s", deal_id, exc)
 
 
 def upload_validation_result(
