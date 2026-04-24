@@ -1,57 +1,66 @@
 # ICATU Bot
 
 ## Overview
-ICATU is a FastAPI-based automation backend that streamlines the "Garantia de Aluguel" (Rental Guarantee) process on the Icatu insurance portal. It integrates with the Bitrix24 CRM, uses Playwright for browser automation, and exposes a REST API for job orchestration.
+ICATU é um backend de automação em FastAPI para o processo de "Garantia de Aluguel" do portal Icatu. Integra com o CRM Bitrix24, usa Playwright para automação de browser/webscraping, e expõe uma API REST rodando no Replit.
 
-## Architecture
+## Arquitetura
 
-- **server.py** – FastAPI application entry point; manages background job threads
-- **src/automation_service.py** – High-level orchestrator for automation jobs
-- **src/auto_icatu.py** – Bridge between CRM data and portal automation
-- **src/icatu_portal.py** – Playwright-based Icatu portal interactions (login, form fill, downloads)
-- **src/bitrix_requests.py** – Bitrix24 CRM API client
-- **src/icatu_data.py** – Data transformation and cleaning
-- **src/validador.py** – PDF validation via the ITI portal
-- **pyqt_app.py** – Desktop GUI (PyQt6) for analyst review (Windows only)
-- **main.py** – CLI entry point for manual testing
-- **data/** – CSV lookup files for data mapping
+- **server.py** – Aplicação FastAPI; entry point, roteamento, middleware de segurança e logging
+- **src/automation_service.py** – Orquestrador de alto nível para jobs de automação Icatu
+- **src/auto_icatu.py** – Ponte entre dados do CRM e automação do portal Icatu
+- **src/icatu_portal.py** – Interações Playwright com o portal Icatu (login, preenchimento de formulário, downloads)
+- **src/icatu_data.py** – Transformação e limpeza de dados vindos do Bitrix24
+- **src/bitrix_requests.py** – Cliente da API REST do Bitrix24 (deals, timeline, upload de arquivos)
+- **src/validador.py** – Validação de assinaturas PDF via portal ITI (validar.iti.gov.br)
+- **src/token_store.py** – Gerenciamento de tokens de acesso (multi-usuário, expiração, persistência em data/tokens.json)
+- **src/logger.py** – Logging estruturado padronizado (formato: `YYYY-MM-DD HH:MM:SS [LEVEL] módulo — chave=valor`)
+- **business_card_data.csv** – Cache local de dados do deal gerado pelo fluxo Icatu
+- **downloads/validador/** – PDFs temporários usados durante a validação (entrada e comprovante)
 
-## Running
+## Executando
 
-The server starts via:
+O servidor inicia via workflow **Start application**:
 ```
 python server.py
 ```
-It listens on `127.0.0.1:8000` by default (configurable via `BOT_HOST` / `BOT_PORT` env vars).
+Escuta em `0.0.0.0:5000` (configurável via `BOT_HOST` / `BOT_PORT`).
 
-## Environment Variables
+## Segurança
 
-Copy `.env.example` to `.env` and fill in:
-- `LOGIN` / `SENHA` – Icatu portal credentials
-- `api_key` – Vista CRM API key
-- `BOT_HOST` / `BOT_PORT` – Server bind address (default: 127.0.0.1:8000)
-- `BOT_SERVER_URL` – Server URL for internal use
-- `BOT_WEBHOOK_TOKEN` – Shared secret for webhook authentication
-- `BITRIX_STATUS_FIELD` / `BITRIX_MESSAGE_FIELD` / `BITRIX_FILE_FIELD` – Bitrix24 field IDs
+- **Tokens por usuário** – Cada consumidor tem seu próprio token com metadados (criação, expiração)
+- **Rate limiting** – 30 req/60s por token (configurável via `RATE_LIMIT_MAX` / `RATE_LIMIT_WINDOW`)
+- **Request ID** – UUID por requisição, retornado no header `X-Request-ID` e no body `request_id`
+- **Endpoints admin** – Gerenciamento de tokens via `ADMIN_TOKEN`, ocultos do Swagger
 
-## Dependencies
+## Variáveis de Ambiente (Secrets)
+
+- `ADMIN_TOKEN` – Token de administração para gerenciar tokens de usuário
+- `BITRIX_LOGIN` / `BITRIX_SENHA` – Credenciais do Bitrix24 para download de arquivos via Playwright
+- `BITRIX_VALIDATION_FIELD` – (opcional) Campo UF padrão para salvar comprovantes de validação
+- `RATE_LIMIT_MAX` – (opcional) Máximo de requisições por janela (default: 30)
+- `RATE_LIMIT_WINDOW` – (opcional) Janela de rate limit em segundos (default: 60)
+
+## Dependências Principais
 
 - Python 3.12
 - fastapi, uvicorn, pydantic
-- playwright (browser automation)
-- pandas (data processing)
-- python-dotenv, requests
-- PyQt6 (desktop GUI, Windows distribution only)
+- playwright (automação de browser)
+- requests, python-dotenv
 
-## Workflow
+## Endpoints Principais
 
-**Start application** – Runs `python server.py` on port 8000 (console output)
+| Método | Endpoint | Descrição |
+|--------|----------|-----------|
+| GET | `/health` | Health check |
+| POST | `/cards/load` | Carrega dados do deal do Bitrix24 |
+| POST | `/webhooks/icatu` | Dispara automação Icatu (verify/run) |
+| POST | `/webhooks/validador` | Valida assinatura de PDF e salva comprovante no Bitrix24 |
+| POST | `/tokens/` | (admin) Cria token de usuário |
+| GET | `/tokens/` | (admin) Lista tokens com metadados |
+| DELETE | `/tokens/{username}` | (admin) Revoga token |
 
-## Key API Endpoints
+## Comentários na Timeline Bitrix24
 
-- `GET /health` – Health check
-- `GET /jobs/{job_id}` – Get job status and events
-- `POST /cards/load` – Load card data from Bitrix24
-- `POST /webhooks/bitrix` – Receive webhook from Bitrix24 to queue a job
-- `POST /webhooks/validador` – Queue a PDF validation job
-- `POST /jobs` – Create a job with optional field overrides
+O endpoint `/webhooks/validador` posta automaticamente 2 comentários BBCode na timeline do deal:
+1. **Início** – ao receber a requisição
+2. **Conclusão** – sucesso (verde), falha de validação (vermelho) ou erro interno (vermelho)

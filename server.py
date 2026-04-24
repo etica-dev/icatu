@@ -18,22 +18,27 @@ log = get_logger("api")
 
 _TL_TITLE = "[B][ Validador de Assinatura — API ][/B]"
 
+
 def _tl_inicio() -> str:
     return f"{_TL_TITLE}\nValidação de assinatura digital iniciada."
+
 
 def _tl_sucesso(result_field: str, upload_ok: bool) -> str:
     corpo = "[COLOR=#27ae60][B]Assinatura validada com sucesso.[/B][/COLOR]"
     if result_field and upload_ok:
-        corpo += f"\nComprovante registrado no Bitrix24 (campo {result_field})."
+        corpo += f"\nComprovante registrado no Bitrix."
     elif result_field and not upload_ok:
-        corpo += f"\n[COLOR=#e67e22]Atenção: comprovante não pôde ser salvo no campo {result_field}.[/COLOR]"
+        corpo += f"\n[COLOR=#e67e22]Atenção: comprovante não pôde ser salvo.[/COLOR]"
     return f"{_TL_TITLE}\n{corpo}"
+
 
 def _tl_falha(motivo: str) -> str:
     return f"{_TL_TITLE}\n[COLOR=#e74c3c][B]Falha na validação:[/B][/COLOR] {motivo}"
 
+
 def _tl_erro_interno() -> str:
     return f"{_TL_TITLE}\n[COLOR=#e74c3c][B]Erro interno durante a validação.[/B][/COLOR] Contate o administrador."
+
 
 HOST = os.getenv("BOT_HOST", "0.0.0.0")
 PORT = int(os.getenv("BOT_PORT", "5000"))
@@ -109,6 +114,7 @@ validador_service = ValidadorService(work_dir=DOWNLOADS_DIR / "validador")
 # Middleware — Request ID
 # ---------------------------------------------------------------------------
 
+
 @app.middleware("http")
 async def request_id_middleware(request: Request, call_next):
     request_id = str(uuid.uuid4())
@@ -131,6 +137,7 @@ async def request_id_middleware(request: Request, call_next):
 # ---------------------------------------------------------------------------
 # Schemas
 # ---------------------------------------------------------------------------
+
 
 class TokenCreatePayload(BaseModel):
     username: str = Field(
@@ -175,7 +182,9 @@ class CardLoadPayload(BaseModel):
 
 
 class ValidadorPayload(BaseModel):
-    card_id: str = Field(..., description="ID do card / deal no Bitrix24.", examples=["27505"])
+    card_id: str = Field(
+        ..., description="ID do card / deal no Bitrix24.", examples=["27505"]
+    )
     pdf_url: str | None = Field(
         default=None,
         description="URL do PDF a validar (suporta URLs autenticadas do Bitrix24).",
@@ -201,6 +210,7 @@ class ValidadorPayload(BaseModel):
 # ---------------------------------------------------------------------------
 # Helpers de autenticação e rate limiting
 # ---------------------------------------------------------------------------
+
 
 def _require_admin(header_token: str | None, body_token: str | None) -> None:
     provided = header_token or body_token or ""
@@ -258,6 +268,7 @@ def _rid(request: Request) -> str:
 # Sistema
 # ---------------------------------------------------------------------------
 
+
 @app.get(
     "/health",
     tags=["Sistema"],
@@ -273,6 +284,7 @@ def health():
 # Gerenciamento de tokens — ocultos do Swagger (requerem ADMIN_TOKEN)
 # ---------------------------------------------------------------------------
 
+
 @app.post("/tokens/", include_in_schema=False, status_code=201)
 def create_token(
     payload: TokenCreatePayload,
@@ -280,7 +292,9 @@ def create_token(
 ):
     _require_admin(x_admin_token, payload.admin_token)
     try:
-        entry = token_store.create_token(payload.username, expires_days=payload.expires_days)
+        entry = token_store.create_token(
+            payload.username, expires_days=payload.expires_days
+        )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     return {
@@ -307,13 +321,16 @@ def delete_token(
     _require_admin(x_admin_token, None)
     removed = token_store.revoke_token(username)
     if not removed:
-        raise HTTPException(status_code=404, detail=f"Usuário '{username}' não encontrado.")
+        raise HTTPException(
+            status_code=404, detail=f"Usuário '{username}' não encontrado."
+        )
     return {"message": f"Token do usuário '{username}' revogado com sucesso."}
 
 
 # ---------------------------------------------------------------------------
 # Endpoints de automação (requerem token de usuário)
 # ---------------------------------------------------------------------------
+
 
 @app.post(
     "/cards/load",
@@ -341,7 +358,9 @@ def load_card(
     username = _require_token(x_webhook_token, payload.token)
     card_id = payload.card_id.strip()
     rid = _rid(request)
-    log.info("request_id=%s user=%s action=cards/load card_id=%s", rid, username, card_id)
+    log.info(
+        "request_id=%s user=%s action=cards/load card_id=%s", rid, username, card_id
+    )
     if not card_id:
         raise HTTPException(status_code=400, detail="card_id é obrigatório.")
     try:
@@ -397,11 +416,16 @@ def run_icatu(
     rid = _rid(request)
 
     if not card_id or not mission:
-        raise HTTPException(status_code=400, detail="card_id e mission são obrigatórios.")
+        raise HTTPException(
+            status_code=400, detail="card_id e mission são obrigatórios."
+        )
 
     log.info(
         "request_id=%s user=%s action=webhooks/icatu card_id=%s mission=%s",
-        rid, username, card_id, mission,
+        rid,
+        username,
+        card_id,
+        mission,
     )
 
     events: list[str] = []
@@ -413,11 +437,17 @@ def run_icatu(
     )
 
     if result.success:
-        log.info("request_id=%s action=webhooks/icatu card_id=%s status=sucesso", rid, card_id)
+        log.info(
+            "request_id=%s action=webhooks/icatu card_id=%s status=sucesso",
+            rid,
+            card_id,
+        )
     else:
         log.warning(
             "request_id=%s action=webhooks/icatu card_id=%s status=falha message=%s",
-            rid, card_id, result.message,
+            rid,
+            card_id,
+            result.message,
         )
 
     return {
@@ -480,7 +510,9 @@ def run_validador(
     card_id = payload.card_id.strip()
     pdf_url = (payload.pdf_url or "").strip() or None
     pdf_base64 = (payload.pdf_base64 or "").strip() or None
-    result_field = (payload.result_field or "").strip() or os.getenv("BITRIX_VALIDATION_FIELD", "")
+    result_field = (payload.result_field or "").strip() or os.getenv(
+        "BITRIX_VALIDATION_FIELD", ""
+    )
     rid = _rid(request)
 
     if not card_id or (not pdf_url and not pdf_base64):
@@ -491,7 +523,10 @@ def run_validador(
 
     log.info(
         "request_id=%s user=%s action=webhooks/validador card_id=%s result_field=%s",
-        rid, username, card_id, result_field or "nenhum",
+        rid,
+        username,
+        card_id,
+        result_field or "nenhum",
     )
 
     add_timeline_comment(card_id, _tl_inicio())
@@ -502,11 +537,21 @@ def run_validador(
             card_id, pdf_url=pdf_url, pdf_base64=pdf_base64, log_callback=events.append
         )
     except ValueError as e:
-        log.warning("request_id=%s action=webhooks/validador card_id=%s erro_validacao=%s", rid, card_id, e)
+        log.warning(
+            "request_id=%s action=webhooks/validador card_id=%s erro_validacao=%s",
+            rid,
+            card_id,
+            e,
+        )
         add_timeline_comment(card_id, _tl_falha(str(e)))
         raise HTTPException(status_code=400, detail=str(e)) from e
     except Exception as e:
-        log.error("request_id=%s action=webhooks/validador card_id=%s erro_interno=%s", rid, card_id, e)
+        log.error(
+            "request_id=%s action=webhooks/validador card_id=%s erro_interno=%s",
+            rid,
+            card_id,
+            e,
+        )
         add_timeline_comment(card_id, _tl_erro_interno())
         raise HTTPException(status_code=500, detail=str(e)) from e
 
@@ -528,31 +573,45 @@ def run_validador(
             if uploaded_ok:
                 log.info(
                     "request_id=%s action=webhooks/validador card_id=%s bitrix_upload=sucesso campo=%s",
-                    rid, card_id, result_field,
+                    rid,
+                    card_id,
+                    result_field,
                 )
             else:
                 log.warning(
                     "request_id=%s action=webhooks/validador card_id=%s bitrix_upload=falha campo=%s",
-                    rid, card_id, result_field,
+                    rid,
+                    card_id,
+                    result_field,
                 )
         except Exception as exc:
             events.append(f"Aviso: falha ao enviar comprovante ao Bitrix24 — {exc}")
             log.error(
                 "request_id=%s action=webhooks/validador card_id=%s bitrix_upload=erro exc=%s",
-                rid, card_id, exc,
+                rid,
+                card_id,
+                exc,
             )
 
     success = result.get("success", False)
     if success:
-        log.info("request_id=%s action=webhooks/validador card_id=%s status=sucesso", rid, card_id)
+        log.info(
+            "request_id=%s action=webhooks/validador card_id=%s status=sucesso",
+            rid,
+            card_id,
+        )
         _upload_ok = bool(bitrix_upload and bitrix_upload.get("success"))
         add_timeline_comment(card_id, _tl_sucesso(result_field, _upload_ok))
     else:
         log.warning(
             "request_id=%s action=webhooks/validador card_id=%s status=falha message=%s",
-            rid, card_id, result.get("message"),
+            rid,
+            card_id,
+            result.get("message"),
         )
-        add_timeline_comment(card_id, _tl_falha(result.get("message", "resultado desconhecido")))
+        add_timeline_comment(
+            card_id, _tl_falha(result.get("message", "resultado desconhecido"))
+        )
 
     return {
         "request_id": rid,
